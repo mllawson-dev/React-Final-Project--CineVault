@@ -1,67 +1,30 @@
-import { createContext, useContext, useState, useCallback } from 'react';
+
+import { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
 import { fetchBatch, searchMovies, TOP20_IDS, GENRE_IDS } from '../services/omdb';
-
 const OMDbContext = createContext();
-
 export function OMDbProvider({ children }) {
-  const [movies,      setMovies]      = useState([]);
-  const [loading,     setLoading]     = useState(false);
-  const [error,       setError]       = useState(null);
-  const [activeGenre, setActiveGenre] = useState('Top20');
-  const [isSearch,    setIsSearch]    = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-
-  const loadGenre = useCallback(async (genre) => {
-    setLoading(true);
-    setError(null);
-    setIsSearch(false);
-    setSearchQuery('');
-    setActiveGenre(genre);
+  const [state, setState] = useState({ movies: [], loading: false, error: null, warning: '', activeGenre: 'Top20', isSearch: false, searchQuery: '', page: 1, total: 0, initialized: false });
+  const pending = useRef(null);
+  const run = useCallback(async (selection) => {
+    pending.current?.abort();
+    const controller = new AbortController();
+    pending.current = controller;
+    setState(prev => ({ ...prev, ...selection, movies: [], loading: true, error: null, warning: '', total: 0, initialized: true }));
     try {
-      const ids  = genre === 'Top20' ? TOP20_IDS : (GENRE_IDS[genre] || []);
-      const data = await fetchBatch(ids);
-      setMovies(data);
-    } catch (e) {
-      setError('Failed to load films. Please check your connection.');
-    } finally {
-      setLoading(false);
+      const data = selection.isSearch
+        ? await searchMovies(selection.searchQuery, selection.page, controller.signal)
+        : await fetchBatch(selection.activeGenre === 'Top20' ? TOP20_IDS : GENRE_IDS[selection.activeGenre] || [], controller.signal);
+      if (!controller.signal.aborted) setState(prev => ({ ...prev, movies: data.movies, total: data.total ?? data.movies.length, warning: data.failed ? `${data.failed} film${data.failed === 1 ? '' : 's'} could not be loaded. Retry to refresh this collection.` : '', loading: false }));
+    } catch (error) {
+      if (!controller.signal.aborted) setState(prev => ({ ...prev, error: error.name === 'TimeoutError' ? 'The request took too long. Please try again.' : error.message, loading: false }));
     }
   }, []);
-
-  const search = useCallback(async (query) => {
-    if (!query.trim()) return;
-    setLoading(true);
-    setError(null);
-    setIsSearch(true);
-    setSearchQuery(query);
-    try {
-      const data = await searchMovies(query);
-      setMovies(data);
-    } catch (e) {
-      setError(e.message || 'No results found.');
-      setMovies([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const clearSearch = useCallback(() => {
-    setIsSearch(false);
-    setSearchQuery('');
-    loadGenre(activeGenre);
-  }, [activeGenre, loadGenre]);
-
-  return (
-    <OMDbContext.Provider value={{
-      movies, loading, error,
-      activeGenre, isSearch, searchQuery,
-      loadGenre, search, clearSearch,
-    }}>
-      {children}
-    </OMDbContext.Provider>
-  );
+  useEffect(() => () => pending.current?.abort(), []);
+  const loadGenre = useCallback(genre => run({ activeGenre: genre, isSearch: false, searchQuery: '', page: 1 }), [run]);
+  const search = useCallback(query => run({ isSearch: true, searchQuery: query.trim(), page: 1 }), [run]);
+  const clearSearch = () => loadGenre(state.activeGenre);
+  const goToPage = page => run({ isSearch: true, searchQuery: state.searchQuery, page });
+  const retry = () => run({ activeGenre: state.activeGenre, isSearch: state.isSearch, searchQuery: state.searchQuery, page: state.page });
+  return <OMDbContext.Provider value={{ ...state, loadGenre, search, clearSearch, goToPage, retry }}>{children}</OMDbContext.Provider>;
 }
-
-export function useOMDb() {
-  return useContext(OMDbContext);
-}
+export const useOMDb = () => useContext(OMDbContext);

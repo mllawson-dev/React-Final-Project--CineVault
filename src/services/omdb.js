@@ -3,8 +3,7 @@
 //  All OMDb API calls centralised here
 // ============================================================
 
-const API_KEY  = 'f78457a3';
-const BASE_URL = 'https://www.omdbapi.com/';
+const BASE_URL = '/api/movies';
 
 // In-memory cache: imdbID → full detail object
 const cache = {};
@@ -78,10 +77,10 @@ export const GENRE_IDS = {
     'tt0080684', // The Empire Strikes Back
     'tt0062622', // 2001: A Space Odyssey
     'tt0076759', // Star Wars: A New Hope
-    'tt0482571', // The Prestige
-    'tt6751668', // Parasite
-    'tt10298840',// Everything Everywhere All at Once
-    'tt1745960', // Top Gun: Maverick
+    'tt0083658', // Blade Runner
+    'tt0078748', // Alien
+    'tt6710474', // Everything Everywhere All at Once
+    'tt2543164', // Arrival
   ],
 };
 
@@ -91,7 +90,7 @@ function normalise(d) {
     imdbID:   d.imdbID,
     title:    d.Title,
     year:     parseInt(d.Year) || 0,
-    genre:    d.Genre   !== 'N/A' ? d.Genre.split(',')[0].trim() : 'Film',
+    genre:    d.Genre && d.Genre !== 'N/A' ? d.Genre.split(',')[0].trim() : 'Film',
     rating:   d.imdbRating !== 'N/A' ? d.imdbRating : '—',
     director: d.Director !== 'N/A' ? d.Director : 'Unknown',
     poster:   d.Poster   !== 'N/A' ? d.Poster   : null,
@@ -107,42 +106,47 @@ function normalise(d) {
   };
 }
 
-// Fetch a single film by IMDb ID
-export async function fetchDetail(imdbID, fullPlot = false) {
-  const cacheKey = `${imdbID}_${fullPlot ? 'full' : 'short'}`;
-  if (cache[cacheKey]) return cache[cacheKey];
-  const plot = fullPlot ? 'full' : 'short';
-  const res  = await fetch(`${BASE_URL}?apikey=${API_KEY}&i=${imdbID}&plot=${plot}`);
+
+export async function request(params, signal) {
+  const res = await fetch(`${BASE_URL}?${new URLSearchParams(params)}`, { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000) });
   const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Movie data could not be loaded. Please try again.');
+  return data;
+}
+export async function fetchDetail(imdbID, fullPlot = false, signal) {
+  const key = `${imdbID}_${fullPlot ? 'full' : 'short'}`;
+  if (cache[key]) return cache[key];
+  const data = await request({ i: imdbID, plot: fullPlot ? 'full' : 'short' }, signal);
   if (data.Response !== 'True') return null;
-  const movie = normalise(data);
-  movie.fullPlot = fullPlot;
-  cache[cacheKey] = movie;
+  const movie = { ...normalise(data), fullPlot };
+  cache[key] = movie;
   return movie;
 }
-
-// Fetch a batch of films by IMDb IDs (concurrent)
-export async function fetchBatch(ids) {
-  const results = await Promise.all(ids.map(id => fetchDetail(id)));
-  return results.filter(Boolean);
+export async function fetchBatch(ids, signal) {
+  const results = new Array(ids.length);
+  let cursor = 0;
+  let firstError;
+  await Promise.all(Array.from({ length: Math.min(4, ids.length) }, async () => {
+    while (cursor < ids.length) {
+      signal?.throwIfAborted();
+      const index = cursor++;
+      try { results[index] = await fetchDetail(ids[index], false, signal); }
+      catch (error) { if (signal?.aborted) throw error; firstError ||= error; }
+    }
+  }));
+  const movies = results.filter(Boolean);
+  if (!movies.length && firstError) throw firstError;
+  return { movies, failed: ids.length - movies.length };
 }
-
-// Search OMDb by text query, then enrich each result
-export async function searchMovies(query) {
-  const res  = await fetch(
-    `${BASE_URL}?apikey=${API_KEY}&s=${encodeURIComponent(query)}&type=movie`
-  );
-  const data = await res.json();
-  if (data.Response !== 'True') throw new Error(data.Error || 'No results found.');
-  const details = await Promise.all(
-    data.Search.slice(0, 12).map(item => fetchDetail(item.imdbID))
-  );
-  return details.filter(Boolean);
+export async function searchMovies(query, page = 1, signal) {
+  const data = await request({ s: query, page: String(page) }, signal);
+  if (data.Response !== 'True') {
+    if (/not found|too many results/i.test(data.Error || '')) return { movies: [], total: 0, failed: 0 };
+    throw new Error('The movie service could not complete this search. Please try again.');
+  }
+  const result = await fetchBatch(data.Search.map(item => item.imdbID), signal);
+  return { ...result, total: Number(data.totalResults) || result.movies.length };
 }
-
-// Get the YouTube trailer search URL for a film
 export function trailerUrl(title, year) {
-  return `https://www.youtube.com/results?search_query=${encodeURIComponent(
-    `${title} ${year} official trailer`
-  )}`;
+  return `https://www.youtube.com/results?search_query=${encodeURIComponent(title + ' ' + year + ' official trailer')}`;
 }

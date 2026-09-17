@@ -1,29 +1,17 @@
-// ============================================================
-//  CineVault — services/storage.js
-//  localStorage helpers — all keys in one place
-// ============================================================
 
-const KEYS = {
-  watchlist: 'cinevault_watchlist',
-  theme:     'cinevault_theme',
-};
-
+const KEYS = { watchlist: 'cinevault_watchlist', theme: 'cinevault_theme' };
 export function getWatchlist() {
   try {
-    return JSON.parse(localStorage.getItem(KEYS.watchlist) || '[]');
-  } catch {
-    return [];
-  }
+    const list = JSON.parse(localStorage.getItem(KEYS.watchlist) || '[]');
+    return Array.isArray(list) ? list.filter(movie => movie && /^tt\d{7,10}$/.test(movie.imdbID) && typeof movie.title === 'string').slice(0, 1000) : [];
+  } catch { return []; }
 }
-
 export function saveWatchlist(list) {
-  localStorage.setItem(KEYS.watchlist, JSON.stringify(list));
+  try { localStorage.setItem(KEYS.watchlist, JSON.stringify(list)); return true; } catch { return false; }
 }
-
 export function getTheme() {
-  return localStorage.getItem(KEYS.theme) || 'dark';
+  try { return localStorage.getItem(KEYS.theme) === 'light' ? 'light' : 'dark'; } catch { return 'dark'; }
 }
-
 export function saveTheme(theme) {
-  localStorage.setItem(KEYS.theme, theme);
+  try { localStorage.setItem(KEYS.theme, theme); } catch { /* Theme remains usable in memory. */ }
 }
