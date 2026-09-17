@@ -1,0 +1,78 @@
+import { chromium } from '@playwright/test';
+import assert from 'node:assert/strict';
+import { mkdir } from 'node:fs/promises';
+const browser = await chromium.launch({ headless: true, channel: 'chrome' });
+const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+const page = await context.newPage();
+const errors = [];
+page.on('pageerror', error => errors.push(error.message));
+const film = id => ({ Response: 'True', imdbID: id, Title: id === 'tt0111161' ? 'The Shawshank Redemption' : id === 'tt9000011' ? 'Arrival Fixture' : id === 'tt9000012' ? 'Blade Fixture' : 'Film ' + id, Year: id === 'tt0068646' ? '1972' : '2016', Genre: 'Drama', imdbRating: id === 'tt0068646' ? '9.9' : '8.0', Director: 'Test Director', Poster: 'N/A', Plot: 'Test synopsis.', Runtime: '110 min', Actors: 'Test Cast', Awards: 'N/A', Ratings: [{ Source: 'Internet Movie Database', Value: '8/10' }], Rated: 'PG', Language: 'English', Country: 'Test' });
+await page.route('**/api/movies?*', async route => {
+  const params = new URL(route.request().url()).searchParams;
+  let body;
+  if (params.has('i')) body = film(params.get('i'));
+  else {
+    const query = params.get('s');
+    if (query === 'error') return route.fulfill({ status: 502, json: { error: 'The movie service is unavailable.' } });
+    if (query === 'empty') body = { Response: 'False', Error: 'Movie not found!' };
+    else {
+      if (query === 'Arrival') await new Promise(resolve => setTimeout(resolve, 350));
+      body = { Response: 'True', Search: [{ imdbID: query === 'Blade' ? 'tt9000012' : 'tt9000011' }], totalResults: '25' };
+    }
+  }
+  try { await route.fulfill({ json: body }); } catch { /* Superseded request was cancelled. */ }
+});
+await page.goto('http://127.0.0.1:4181/');
+await page.getByRole('button', { name: 'View details for The Shawshank Redemption', exact: true }).waitFor();
+assert.equal(await page.locator('dialog').count(), 0);
+await page.getByRole('button', { name: 'Save The Shawshank Redemption to watchlist' }).click();
+await page.reload();
+await page.getByRole('button', { name: 'Open watchlist, 1 saved films' }).click();
+await page.getByRole('dialog', { name: 'Your next watches' }).waitFor();
+await page.getByRole('button', { name: 'View details for The Shawshank Redemption' }).click();
+await page.getByRole('dialog', { name: 'The Shawshank Redemption' }).waitFor();
+assert.equal(await page.locator('dialog').count(), 1);
+assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Close film details');
+await page.keyboard.press('Shift+Tab');
+assert.ok(await page.evaluate(() => document.activeElement.closest('dialog') !== null));
+await page.keyboard.press('Escape');
+assert.equal(await page.locator('dialog').count(), 0);
+assert.ok(await page.evaluate(() => document.activeElement.classList.contains('watchlist-btn')));
+await page.getByRole('combobox', { name: 'Sort by' }).selectOption('rating');
+assert.equal(await page.locator('.movie-card h3').first().innerText(), 'Film tt0068646');
+const search = page.getByRole('searchbox', { name: 'Search movie titles' });
+await search.fill('Arrival'); await page.getByRole('button', { name: 'Search', exact: true }).click();
+await search.fill('Blade'); await page.getByRole('button', { name: /Search again|^Search$/ }).click();
+await page.getByRole('button', { name: 'View details for Blade Fixture' }).waitFor();
+await page.waitForTimeout(400);
+assert.equal(await page.getByRole('button', { name: 'View details for Arrival Fixture' }).count(), 0);
+await page.getByRole('button', { name: 'Next →' }).click();
+await page.getByText('Page 2 of 3 · 25 matches').waitFor();
+await search.fill('empty'); await page.getByRole('button', { name: 'Search', exact: true }).click();
+await page.getByText('No films found', { exact: true }).waitFor();
+await search.fill('error'); await page.getByRole('button', { name: 'Search', exact: true }).click();
+await page.getByRole('button', { name: 'Try again' }).waitFor();
+await page.getByRole('button', { name: 'Clear search and return to collection' }).click();
+await page.getByRole('button', { name: 'View details for The Shawshank Redemption', exact: true }).waitFor();
+await page.setViewportSize({ width: 375, height: 812 });
+await page.getByRole('button', { name: 'Open navigation' }).click();
+await page.getByRole('button', { name: 'Sci-Fi', exact: true }).click();
+await page.getByRole('heading', { name: 'Sci-Fi, selected.' }).waitFor();
+await page.getByRole('button', { name: /View details for Film/ }).first().click();
+await page.getByRole('dialog').waitFor();
+assert.ok(await page.getByRole('button', { name: '+ Add to watchlist', exact: true }).isVisible());
+await page.keyboard.press('Escape');
+assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+await page.getByRole('button', { name: 'Open navigation' }).click();
+await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link', { name: 'Project notes' }).click();
+await page.getByRole('heading', { name: 'A film for tonight. A collection for later.' }).waitFor();
+assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+await mkdir('qa', { recursive: true });
+await page.screenshot({ path: 'qa/mobile-case-study.png', fullPage: true });
+await page.setViewportSize({ width: 1440, height: 1000 });
+await page.screenshot({ path: 'qa/desktop-case-study.png', fullPage: true });
+await page.emulateMedia({ reducedMotion: 'reduce' });
+assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).scrollBehavior), 'auto');
+assert.deepEqual(errors, []);
+console.log('PASS: discovery, sorting, persistence, dialog focus/restoration, stale searches, pagination, empty/error states, mobile navigation and saving, case-study routes, reduced motion, and no page errors.');
+await browser.close();
